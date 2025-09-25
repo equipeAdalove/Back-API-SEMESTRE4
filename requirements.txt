@@ -9,3 +9,4 @@ scikit-learn
 unidecode
 openpyxl
 python-multipart
+ddgs
