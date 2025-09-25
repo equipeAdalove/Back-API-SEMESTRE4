@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pandas
+pdfplumber
+nltk
+requests
+sentence-transformers
+scikit-learn
+unidecode
+openpyxl
+python-multipart
