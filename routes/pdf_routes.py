@@ -11,6 +11,7 @@ from services.extract_service import extract_lines_from_pdf_bytes
 from services.format_service import format_many
 from services.normalize_service import normalizar_com_ollama, choose_best_ncm
 from services.rag_service import RAGService
+from services.scraper_service import find_manufacturer_and_location
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -49,6 +50,9 @@ async def process_pdf(request: Request, file: UploadFile = File(...)):
     for it in itens_format:
         pn = it.get("partnumber", "")
         desc_raw = it.get("descricao_raw", "")
+        scraper_info = find_manufacturer_and_location(pn)
+        fabricante = scraper_info.get("fabricante", "Não encontrado")
+        localizacao = scraper_info.get("localizacao", "Não encontrada")
 
         try:
             desc_norm = normalizar_com_ollama(desc_raw)
@@ -62,7 +66,13 @@ async def process_pdf(request: Request, file: UploadFile = File(...)):
                 raise ValueError("Nenhum candidato NCM")
         except Exception as e:
             logger.exception("Erro RAG")
-            rows.append({"partnumber": pn, "ncm": "", "descricao": desc_raw})
+            rows.append({
+                "partnumber": pn,
+                "fabricante": fabricante,
+                "localizacao": localizacao,
+                "ncm": "Erro RAG", 
+                "descricao": desc_raw
+            })
             continue
 
         try:
@@ -76,9 +86,16 @@ async def process_pdf(request: Request, file: UploadFile = File(...)):
             desc_norm
         )
 
-        rows.append({"partnumber": pn, "ncm": ncm_final, "descricao": descricao_final})
+        rows.append({
+            "partnumber": pn,
+            "fabricante": fabricante,
+            "localizacao": localizacao,
+            "ncm": ncm_final, 
+            "descricao": descricao_final
+        })
 
-    df_out = pd.DataFrame(rows, columns=["partnumber", "ncm", "descricao"])
+    df_out = pd.DataFrame(rows, columns=["partnumber", "fabricante", "localizacao", "ncm", "descricao"])
+    
     stream = io.BytesIO()
     with pd.ExcelWriter(stream, engine="openpyxl") as writer:
         df_out.to_excel(writer, index=False, sheet_name="resultado")
