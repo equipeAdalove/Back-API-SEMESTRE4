@@ -10,3 +10,4 @@ unidecode
 openpyxl
 python-multipart
 joblib
+duckduckgo-search
