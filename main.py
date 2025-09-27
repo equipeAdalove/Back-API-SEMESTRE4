@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from routes import pdf_routes
+from routes import pdf_routes, test_routes
 
 app = FastAPI()
 
@@ -15,7 +15,5 @@ app.add_middleware(
 )
 
 app.include_router(pdf_routes.router, prefix="/api")
+app.include_router(test_routes.router, prefix="/api", tags=["TESTE"])
 
-react_build_dir = os.path.join(os.path.dirname(__file__), "dist")
-
-app.mount("/", StaticFiles(directory=react_build_dir, html=True), name="react")
