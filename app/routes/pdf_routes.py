@@ -11,7 +11,6 @@ from services.extract_service import extract_lines_from_pdf_bytes
 from services.format_service import format_many
 from services.normalize_service import normalizar_com_ollama, choose_best_ncm
 from services.rag_service import RAGService
-from services.scraper_service import find_manufacturer_and_location
 from services.predict_ncm import PredictNCMService
 
 logger = logging.getLogger(__name__)
@@ -61,10 +60,6 @@ async def process_pdf(request: Request, file: UploadFile = File(...)):
     for it in itens_format:
         pn = it.get("partnumber", "")
         desc_raw = it.get("descricao_raw", "")
-        
-        scraper_info = find_manufacturer_and_location(pn)
-        fabricante = scraper_info.get("fabricante", "Não encontrado")
-        localizacao = scraper_info.get("localizacao", "Não encontrada")
 
         ncm_modelo_simples = ""
         try:
@@ -85,38 +80,23 @@ async def process_pdf(request: Request, file: UploadFile = File(...)):
                 raise ValueError("Nenhum candidato NCM")
         except Exception as e:
             logger.exception("Erro RAG")
-            rows.append({
-                "partnumber": pn,
-                "fabricante": fabricante,
-                "localizacao": localizacao,
-                "ncm_rag_llm": "Erro RAG",
-                "ncm_modelo_simples": ncm_modelo_simples,
-                "descricao": desc_raw
-            })
+            rows.append({"partnumber": pn, "ncm": "", "descricao": desc_raw})
             continue
 
         try:
-            ncm_final_rag = choose_best_ncm(desc_norm, top_candidates)
+            ncm_final = choose_best_ncm(desc_norm, top_candidates)
         except Exception as e:
             logger.warning("Erro escolha LLM, usando top candidate: %s", e)
-            ncm_final_rag = top_candidates[0]["ncm"]
+            ncm_final = top_candidates[0]["ncm"]
 
         descricao_final = next(
-            (c.get("descricao_longa") or c.get("descricao", "") for c in top_candidates if c.get("ncm") == ncm_final_rag),
+            (c.get("descricao_longa") or c.get("descricao", "") for c in top_candidates if c.get("ncm") == ncm_final),
             desc_norm
         )
 
-        rows.append({
-            "partnumber": pn,
-            "fabricante": fabricante,
-            "localizacao": localizacao,
-            "ncm_rag_llm": ncm_final_rag,
-            "ncm_modelo_simples": ncm_modelo_simples,
-            "descricao_fiscal_sugerida": descricao_final
-        })
+        rows.append({"partnumber": pn, "ncm": ncm_final, "ncm_modelo_simples": ncm_modelo_simples, "descricao": descricao_final})
 
-    df_out = pd.DataFrame(rows, columns=["partnumber", "fabricante", "localizacao", "ncm_rag_llm", "ncm_modelo_simples", "descricao_fiscal_sugerida"])
-    
+    df_out = pd.DataFrame(rows, columns=["partnumber", "ncm", "descricao"])
     stream = io.BytesIO()
     with pd.ExcelWriter(stream, engine="openpyxl") as writer:
         df_out.to_excel(writer, index=False, sheet_name="resultado")

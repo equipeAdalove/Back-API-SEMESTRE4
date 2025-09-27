@@ -9,4 +9,5 @@ scikit-learn
 unidecode
 openpyxl
 python-multipart
-ddgs
+joblib
+duckduckgo-search
