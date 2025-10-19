@@ -2,12 +2,12 @@ import re
 import unidecode
 import requests
 from nltk.corpus import stopwords
-import os
+from app.core.config import settings
 
 STOPWORDS_PT = set(stopwords.words("portuguese"))
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
+OLLAMA_URL = settings.ollama_url
+OLLAMA_MODEL = settings.ollama_model
 
 def limpar_texto(text: str) -> str:
     text = str(text).lower()

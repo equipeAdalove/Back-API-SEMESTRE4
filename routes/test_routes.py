@@ -7,7 +7,7 @@ router = APIRouter()
 
 @router.post("/test_pdf")
 async def test_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
+    if not file.filename.lower().endswith(".pdf"): # type: ignore
         raise HTTPException(status_code=400, detail="Envie um arquivo PDF válido.")
 
     # Apenas lê os bytes para validar que o arquivo chegou
@@ -32,7 +32,7 @@ async def test_pdf(file: UploadFile = File(...)):
         df.to_excel(writer, index=False, sheet_name="resultado_teste")
     stream.seek(0)
 
-    filename = file.filename.rsplit(".", 1)[0] + "_TESTE.xlsx"
+    filename = file.filename.rsplit(".", 1)[0] + "_TESTE.xlsx" # pyright: ignore[reportOptionalMemberAccess]
     return StreamingResponse(
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
