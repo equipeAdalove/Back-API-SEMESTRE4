@@ -6,36 +6,47 @@ Este projeto implementa um **backend em FastAPI** que recebe arquivos **PDF** co
 
 ## 🚀 Funcionalidades
 
-- Upload de arquivos PDF pelo frontend ou via API.
+- Upload de arquivos PDF via API ou frontend.
 - Extração automática de PartNumbers e descrições.
-- Busca inteligente na base de NCM (`ncm.csv`) via **TF-IDF + Similaridade de Cosseno**.
-- Uso do **Qwen3 (Ollama)** para sugerir NCM e gerar descrição fiscal detalhada.
-- Retorno de um arquivo **Excel (.xlsx)** com as colunas:
+- Busca inteligente na base de NCM (`ncm.csv`) usando **TF-IDF + Similaridade de Cosseno**.
+- Sugestão de NCM via **Qwen3 (Ollama)** e geração de descrição fiscal detalhada.
+- Retorno de arquivo **Excel (.xlsx)** com colunas:
   - `PartNumber`
   - `Descrição Reduzida`
   - `Descrição Fiscal`
   - `NCM Sugerido`
-- Base de NCM carregada **em cache** para melhor performance.
 
 ---
 
 ## 📂 Estrutura do Projeto
 
 ```
-backend/
-│── app/
-│   ├── main.py                # Ponto de entrada FastAPI
-│   ├── routes/
-│   │   └── process_pdf.py     # Rotas da API
-│   ├── services/
-│   │   ├── pipeline_service.py # Orquestração do processo
-│   │   ├── pdf_service.py      # Extração de texto do PDF
-│   │   ├── rag_service.py      # Busca de NCM (RAG)
-│   │   └── llm_service.py      # Integração com Qwen3 (Ollama)
-│   └── models/                # Futuro uso para persistência
-│── requirements.txt
-│── .env
-│── README.md
+├── app
+│   ├── core
+│   │   └── config.py
+│   └── main.py
+├── auth
+├── database
+│   └── database.py
+├── models
+│   └── models.py
+├── routes
+│   ├── pdf_routes.py
+│   └── test_routes.py
+├── schemas
+├── services
+│   ├── extract_service.py
+│   ├── format_service.py
+│   ├── normalize_service.py
+│   ├── pdf_service.py
+│   ├── rag_service.py
+│   └── scraper_service.py
+├── .env-example
+├── .gitignore
+├── README.md
+├── config.py
+├── fabricantes.txt
+└── requirements.txt
 ```
 
 ---
@@ -43,72 +54,83 @@ backend/
 ## ⚙️ Pré-requisitos
 
 - Python 3.10+
-- [Ollama](https://ollama.com/) instalado e modelo **qwen3** disponível
+- [Ollama](https://ollama.com/) instalado com modelo **qwen3**
+- PostgreSQL instalado (ou outro banco compatível)
 
 ---
 
 ## 📥 Instalação
 
-1. Clone este repositório:
+1. Clone o repositório:
 
 ```bash
 git clone https://github.com/equipeAdalove/Back-API-SEMESTRE4.git
 cd Back-API-SEMESTRE4/backend
 ```
 
-2. Crie e ative um ambiente virtual:
+2. Crie e ative o ambiente virtual:
 
 ```bash
 python -m venv venv
-source venv/bin/activate   # Linux/Mac
-venv\Scripts\activate ou source venv/Scripts/activate  # Windows
+# Linux/Mac
+source venv/bin/activate
+# Windows
+venv\Scripts\activate ou source venv/Scripts/activate
 ```
+Obs: No Windows, esse comando pode variar de uma CLI para outra, saiba apenas que deve ser ativado o script 'activate' que fica dentro de venv/Scripts
 
-3. Instale as dependências:
+3. Instale dependências (já dentro do ambiente virtual):
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Configure o arquivo `.env`:
+4. Configure o arquivo `.env` (copie de `.env-example`):
 
 ```ini
-NCM_CSV_PATH=[caminho do csv]
-OLLAMA_MODEL="qwen3:1.7b"
+DB_URL=postgresql://usuario:senha@localhost:5432/api4ads
 OLLAMA_URL=http://localhost:11434/api/generate
-
+OLLAMA_MODEL=qwen3:1.7b
+NCM_CSV_PATH=C:/csv/ncm.csv
+TOP_K=5
 ```
 
-⚠️ O arquivo `ncm.csv` deve conter pelo menos as colunas:
+⚠️ Observações:
 
-- `ncm`
-- `descricao`
-
-Codificação: **latin1**  
-Separador: **, (vírgula)**
+- **Banco de dados:** crie o banco **antes** de rodar o backend. Por padrão, usamos `api4ads`, mas você pode escolher outro nome.
+- **CSV de NCM:** deve conter colunas `ncm` e `descricao`, codificação **latin1**, separador `,`.
+- **Migrations ainda não implementadas:** como ainda não implementamos as migrations, caso exista qualquer modificação no banco (adição de coluna, mudança de tipo, etc.), devemos excluir o banco de dados atual (ou todas as tabelas - caso exclua o banco, lembre-se de recriá-lo), e rodar novamente o projeto para criação automática das novas tabelas. 
 
 ---
 
 ## ▶️ Executando
 
-Inicie o servidor FastAPI:
+1. Certifique-se de que o banco existe e o `.env` está configurado.
+2. Inicie o servidor FastAPI:
 
 ```bash
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
-A API estará disponível em:
+3. As tabelas serão criadas automaticamente na primeira execução.
+
+**API disponível em:**
 
 ```
 http://localhost:8000
 ```
 
+---
+
 ## 📄 Documentação da API
 
-O FastAPI gera documentação automática:
+- **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Redoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
-- **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)  
-  Interface interativa para testar endpoints.
+---
 
-- **Redoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)  
-  Documentação detalhada da API.
+## 💡 Dicas
+
+- Sempre configure `.env` antes de rodar o backend.
+- Para mudar o banco, atualize `DB_URL` e crie o banco correspondente.
+- Certifique-se de que o Ollama está rodando e o modelo `qwen3` está disponível.

@@ -1,8 +1,11 @@
+from fastapi import Request
 import pandas as pd
 import logging
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from .normalize_service import limpar_texto
+from app.core.config import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +25,20 @@ class RAGService:
         logger.info("Gerando embeddings NCM... isso pode demorar alguns segundos...")
         self.embeddings = self.model.encode(self.df_ncm["descricao_clean"].tolist(), convert_to_numpy=True)
 
-    def find_top_ncm(self, query_text: str, top_k=5):
+    def find_top_ncm(self, query_text: str, top_k=settings.top_k):
         q_vec = self.model.encode([limpar_texto(query_text)], convert_to_numpy=True)
         sims = cosine_similarity(q_vec, self.embeddings).flatten()
         top_indices = sims.argsort()[-top_k:][::-1]
         return self.df_ncm.iloc[top_indices].to_dict(orient="records")
+    
+
+
+
+def _get_or_create_rag(request: Request, ncm_path:str) -> RAGService:
+        app_state = request.app.state
+        rag = getattr(app_state, "rag_service", None)
+        if rag is None:
+            logger.info("Inicializando RAGService (carregando CSV e embeddings)...")
+            rag = RAGService(ncm_path)
+            setattr(app_state, "rag_service", rag)
+        return rag
