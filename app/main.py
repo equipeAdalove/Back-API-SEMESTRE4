@@ -1,10 +1,17 @@
-import os
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routes import pdf_routes, test_routes
+from contextlib import asynccontextmanager
+from models import models
+from database.database import engine
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app:FastAPI):
+    models.Base.metadata.create_all(bind=engine)
+    yield
+    
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

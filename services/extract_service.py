@@ -21,7 +21,7 @@ def extract_lines_from_pdf_bytes(pdf_bytes: bytes) -> List[str]:
                 match = re.match(pattern_itens, linha.strip())
                 if match:
                     itens.append(match.group(1).strip())
-    print("#######################EXTRACT SERVICE")
+
     for item in itens:
         print(item)
     return itens
