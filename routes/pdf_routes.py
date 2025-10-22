@@ -1,24 +1,21 @@
 import io
 import logging
 from typing import List
-from fastapi import APIRouter, Request, UploadFile, File, HTTPException, status # Added status from main
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException, status
 from fastapi.responses import StreamingResponse, JSONResponse
 import pandas as pd
 from pydantic import BaseModel
 
-# Imports from your branch (feat/add-endpoint-validacao) are kept
-from config import NCM_CSV_PATH, TOP_K
+from app.core.config import settings
 from services.extract_service import extract_lines_from_pdf_bytes
 from services.format_service import format_many
 from services.normalize_service import normalizar_com_ollama, choose_best_ncm
-from services.rag_service import RAGService
+from services.rag_service import RAGService, _get_or_create_rag 
 from services.scraper_service import find_manufacturer_and_location
-# Removed PDFService import from main as it conflicts with the multi-step logic
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# --- Pydantic Models from your branch ---
 class ExtractedItem(BaseModel):
     partnumber: str
     descricao_raw: str
@@ -37,59 +34,50 @@ class FinalItem(BaseModel):
 class ExcelRequest(BaseModel):
     items: List[FinalItem]
 
-# --- Helper function from your branch ---
-def _get_or_create_rag(request: Request) -> RAGService:
-    app_state = request.app.state
-    rag = getattr(app_state, "rag_service", None)
-    if rag is None:
-        logger.info("Inicializando RAGService (carregando CSV e embeddings)...")
-        rag = RAGService(NCM_CSV_PATH)
-        setattr(app_state, "rag_service", rag)
-    return rag
-
-# --- Endpoint /extract_from_pdf from your branch ---
-@router.post("/extract_from_pdf", response_model=List[ExtractedItem], status_code=status.HTTP_200_OK) # Added status_code
+# --- Endpoint /extract_from_pdf ---
+@router.post("/extract_from_pdf", response_model=List[ExtractedItem], status_code=status.HTTP_200_OK)
 async def extract_from_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Envie um arquivo PDF.") # Use status constants
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Envie um arquivo PDF válido com nome.")
 
     file_bytes = await file.read()
     if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Arquivo vazio.") # Use status constants
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Arquivo vazio.")
 
     try:
         itens_raw: List[str] = extract_lines_from_pdf_bytes(file_bytes)
     except Exception as e:
         logger.exception("Erro extraindo PDF")
-        # Use more specific error from your branch, but keep general logging from main
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro extraindo PDF: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro durante a extração do PDF: {e}")
 
     if not itens_raw:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhum item encontrado no PDF.") # Use status constants
+        logger.info(f"Nenhum item extraído do PDF: {file.filename}")
+        return JSONResponse(content=[])
 
     itens_formatados = format_many(itens_raw)
-    
     return JSONResponse(content=itens_formatados)
 
-# --- Endpoint /process_items from your branch ---
-@router.post("/process_items", response_model=List[FinalItem], status_code=status.HTTP_200_OK) # Added status_code
+# --- Endpoint /process_items ---
+@router.post("/process_items", response_model=List[FinalItem], status_code=status.HTTP_200_OK)
 async def process_items(request: Request, data: ProcessRequest):
     itens_validados = data.items
-    rag_service = _get_or_create_rag(request)
+    if not itens_validados:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Lista de itens para processar está vazia.")
 
-    known_manufacturers = {"texas instruments", "samsung electro-mechanics", "intel"}
+    rag_service = _get_or_create_rag(request, settings.ncm_csv_path)
+
+    known_manufacturers = {"texas instruments", "samsung electro-mechanics", "intel"} # Mock
 
     processed_rows = []
     for item in itens_validados:
         pn = item.partnumber
         desc_raw = item.descricao_raw
-        
-        try: # Added try block for scraper and normalization
+
+        try:
             scraper_info = find_manufacturer_and_location(pn)
             fabricante = scraper_info.get("fabricante", "Não identificado")
             localizacao = scraper_info.get("localizacao", "Não encontrada")
-
-            is_new = fabricante.lower() not in known_manufacturers and fabricante != "Não encontrado"
+            is_new = fabricante != "Não identificado" and fabricante.lower() not in known_manufacturers
 
             try:
                 desc_norm = normalizar_com_ollama(desc_raw)
@@ -98,11 +86,11 @@ async def process_items(request: Request, data: ProcessRequest):
                 desc_norm = desc_raw
 
             try:
-                top_candidates = rag_service.find_top_ncm(desc_norm, top_k=TOP_K)
+                top_candidates = rag_service.find_top_ncm(desc_norm, top_k=settings.top_k)
                 if not top_candidates:
-                    raise ValueError("Nenhum candidato NCM")
+                    raise ValueError("Nenhum candidato NCM encontrado pelo RAG.")
             except Exception as e:
-                logger.warning(f"Erro RAG para PN {pn}: {e}")
+                logger.warning(f"Erro RAG para PN {pn} ({desc_norm}): {e}")
                 processed_rows.append({
                     "partnumber": pn, "fabricante": fabricante, "localizacao": localizacao,
                     "ncm": "Erro RAG", "descricao": desc_raw, "is_new_manufacturer": is_new
@@ -116,7 +104,8 @@ async def process_items(request: Request, data: ProcessRequest):
                 ncm_final = top_candidates[0]["ncm"]
 
             descricao_final = next(
-                (c.get("descricao_longa") or c.get("descricao", "") for c in top_candidates if c.get("ncm") == ncm_final),
+                (c.get("descricao_longa") or c.get("descricao", "")
+                for c in top_candidates if c.get("ncm") == ncm_final),
                 desc_norm
             )
 
@@ -124,29 +113,27 @@ async def process_items(request: Request, data: ProcessRequest):
                 "partnumber": pn, "fabricante": fabricante, "localizacao": localizacao,
                 "ncm": ncm_final, "descricao": descricao_final, "is_new_manufacturer": is_new
             })
+
         except Exception as e:
-             # General error catch during item processing
-             logger.exception(f"Erro inesperado processando item PN {pn}")
-             processed_rows.append({
-                 "partnumber": pn, "fabricante": "Erro Processamento", "localizacao": "",
-                 "ncm": "Erro", "descricao": desc_raw, "is_new_manufacturer": False
-             })
-             # Continue to next item instead of stopping the whole request
-             continue
-            
+            logger.exception(f"Erro inesperado processando item PN {pn}")
+            processed_rows.append({
+                "partnumber": pn, "fabricante": "Erro Processamento", "localizacao": "",
+                "ncm": "Erro", "descricao": desc_raw, "is_new_manufacturer": False
+            })
+            continue
+
     return JSONResponse(content=processed_rows)
 
-# --- Endpoint /generate_excel from your branch ---
-@router.post("/generate_excel", status_code=status.HTTP_200_OK) # Added status_code
+# --- Endpoint /generate_excel ---
+@router.post("/generate_excel", status_code=status.HTTP_200_OK)
 async def generate_excel(data: ExcelRequest):
-    items_data = [item.dict() for item in data.items]
-    
+    items_data = [item.model_dump() for item in data.items]
+
     if not items_data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhum item fornecido para gerar o Excel.") # Use status constants
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhum item fornecido para gerar o Excel.")
 
-    try: # Add try block for excel generation
+    try:
         df_out = pd.DataFrame(items_data)
-
         if 'is_new_manufacturer' in df_out.columns:
             df_out = df_out.drop(columns=['is_new_manufacturer'])
 
@@ -156,18 +143,11 @@ async def generate_excel(data: ExcelRequest):
         stream.seek(0)
 
         filename = "pedido_classificado.xlsx"
-        
-        # Keep StreamingResponse from your branch
         return StreamingResponse(
             stream,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename=\"{filename}\""} # Ensure filename is quoted
+            headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
         )
     except Exception as e:
         logger.exception("Erro gerando arquivo Excel")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao gerar o arquivo Excel.") # Use status constants
-
-
-# --- Removed the original /process_pdf endpoint from main ---
-# The logic from main's /process_pdf that used PDFService is now discarded
-# in favor of the multi-step endpoints above.
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao gerar o arquivo Excel.")
