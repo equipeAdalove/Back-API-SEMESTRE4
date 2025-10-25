@@ -1,5 +1,6 @@
 annotated-types==0.7.0
 anyio==4.11.0
+bcrypt==3.2.0
 Brotli==1.1.0
 certifi==2025.10.5
 cffi==2.0.0
@@ -8,6 +9,7 @@ click==8.3.0
 colorama==0.4.6
 cryptography==46.0.3
 ddgs==9.6.1
+ecdsa==0.19.1
 et_xmlfile==2.0.0
 fastapi==0.119.0
 filelock==3.20.0
@@ -33,11 +35,13 @@ numpy==1.26.4
 openpyxl==3.1.5
 packaging==25.0
 pandas==2.3.3
+passlib==1.7.4
 pdfminer.six==20250506
 pdfplumber==0.11.7
 pillow==12.0.0
 primp==0.15.0
 psycopg2==2.9.11
+pyasn1==0.6.1
 pycparser==2.23
 pydantic==2.12.3
 pydantic-settings==2.11.0
@@ -45,11 +49,13 @@ pydantic_core==2.41.4
 pypdfium2==4.30.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.1
+python-jose==3.5.0
 python-multipart==0.0.20
 pytz==2025.2
 PyYAML==6.0.3
 regex==2025.9.18
 requests==2.32.5
+rsa==4.9.1
 safetensors==0.6.2
 scikit-learn==1.7.2
 scipy==1.16.2
