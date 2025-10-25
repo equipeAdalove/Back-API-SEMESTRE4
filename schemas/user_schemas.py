@@ -25,3 +25,10 @@ class TokenData(BaseModel):
 class UserProfile(BaseModel):
     name: str
     email: str
+
+class TokenResponseData(BaseModel): 
+    access_token: str
+    token_type: str
+
+class TokenResponse(BaseModel): 
+    data: TokenResponseData
