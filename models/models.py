@@ -28,8 +28,8 @@ class Fabricante(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     razao_soc = Column(String(200), nullable=False)
-    endereco = Column(String(200))
-    pais_origem = Column(String(100))
+    endereco = Column(String(200), nullable=True)
+    pais_origem = Column(String(200), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -66,8 +66,8 @@ class Transacao(Base):
     __tablename__ = "transacoes"
 
     id = Column(Integer, primary_key=True, index=True)
-    doc_entrada = Column(LargeBinary, nullable=False)
-    doc_saida = Column(LargeBinary)
+    doc_entrada = Column(LargeBinary, nullable=True)
+    doc_saida = Column(LargeBinary, nullable=True)
     data_upload = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
