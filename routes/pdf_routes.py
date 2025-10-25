@@ -1,7 +1,7 @@
 import io
 import logging
 from typing import List
-from fastapi import APIRouter, Depends, Request, UploadFile, File, HTTPException, status 
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException, status, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 import pandas as pd
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ from services.format_service import format_many
 from services.normalize_service import normalizar_com_ollama, choose_best_ncm
 from services.rag_service import RAGService, _get_or_create_rag 
 from services.scraper_service import find_manufacturer_and_location
+from services.auth_service import get_current_user 
 from services import auth_service
 from database import crud, database
 from schemas import user_schemas
@@ -40,7 +41,7 @@ class ExcelRequest(BaseModel):
 
 # --- Endpoint /extract_from_pdf ---
 @router.post("/extract_from_pdf", response_model=List[ExtractedItem], status_code=status.HTTP_200_OK)
-async def extract_from_pdf(file: UploadFile = File(...)):
+async def extract_from_pdf(file: UploadFile = File(...), current_user: dict = Depends(get_current_user) ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Envie um arquivo PDF válido com nome.")
 
@@ -63,7 +64,7 @@ async def extract_from_pdf(file: UploadFile = File(...)):
 
 # --- Endpoint /process_items ---
 @router.post("/process_items", response_model=List[FinalItem], status_code=status.HTTP_200_OK)
-async def process_items(request: Request, data: ProcessRequest):
+async def process_items(request: Request, data: ProcessRequest, current_user: dict = Depends(get_current_user)):
     itens_validados = data.items
     if not itens_validados:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Lista de itens para processar está vazia.")
@@ -130,7 +131,7 @@ async def process_items(request: Request, data: ProcessRequest):
 
 # --- Endpoint /generate_excel ---
 @router.post("/generate_excel", status_code=status.HTTP_200_OK)
-async def generate_excel(data: ExcelRequest):
+async def generate_excel(data: ExcelRequest, current_user: dict = Depends(get_current_user)):
     items_data = [item.model_dump() for item in data.items]
 
     if not items_data:
