@@ -1,10 +1,11 @@
 import io
 import logging
 from typing import List
-from fastapi import APIRouter, Request, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, Request, UploadFile, File, HTTPException, status 
 from fastapi.responses import StreamingResponse, JSONResponse
 import pandas as pd
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from services.extract_service import extract_lines_from_pdf_bytes
@@ -12,6 +13,9 @@ from services.format_service import format_many
 from services.normalize_service import normalizar_com_ollama, choose_best_ncm
 from services.rag_service import RAGService, _get_or_create_rag 
 from services.scraper_service import find_manufacturer_and_location
+from services import auth_service
+from database import crud, database
+from schemas import user_schemas
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -151,3 +155,50 @@ async def generate_excel(data: ExcelRequest):
     except Exception as e:
         logger.exception("Erro gerando arquivo Excel")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao gerar o arquivo Excel.")
+    
+@router.post("/save_items", status_code=status.HTTP_201_CREATED)
+async def save_items_to_db(
+    data: ExcelRequest, # Reutiliza o mesmo schema do Excel
+    db: Session = Depends(database.get_db),
+    current_user: user_schemas.User = Depends(auth_service.get_current_user)
+):
+    if not data.items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhuma item fornecido.")
+
+    try:
+        # 1. Criar a Transação principal
+        db_transacao = crud.create_transacao(db=db, usuario_id=current_user.id)
+        
+        saved_items_count = 0
+        
+        for item_data in data.items:
+            item_dict = item_data.model_dump() # Converte Pydantic model para dict
+
+            # 2. Garantir que o Fabricante existe
+            db_fabricante = crud.get_or_create_fabricante(
+                db=db,
+                nome=item_dict.get('fabricante', 'Não identificado'),
+                localizacao=item_dict.get('localizacao', 'Não encontrada')
+            )
+            
+            # 3. Salvar ou Atualizar o Item (Upsert)
+            db_item = crud.upsert_item(
+                db=db,
+                item_data=item_dict,
+                fabricante_id=db_fabricante.id
+            )
+            
+            # 4. Vincular o Item à Transação
+            crud.link_item_to_transacao(
+                db=db,
+                transacao_id=db_transacao.id,
+                item_partnumber=db_item.partnumber
+            )
+            saved_items_count += 1
+            
+        return {"message": f"{saved_items_count} itens salvos com sucesso na transação {db_transacao.id}."}
+
+    except Exception as e:
+        logger.exception("Erro ao salvar itens no banco de dados")
+        db.rollback() # Desfaz as mudanças em caso de erro
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro interno ao salvar: {e}")
