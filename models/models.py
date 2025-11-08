@@ -66,8 +66,7 @@ class Transacao(Base):
     __tablename__ = "transacoes"
 
     id = Column(Integer, primary_key=True, index=True)
-    doc_entrada = Column(LargeBinary, nullable=True)
-    doc_saida = Column(LargeBinary, nullable=True)
+    nome = Column(String(255), nullable=True)
     data_upload = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
