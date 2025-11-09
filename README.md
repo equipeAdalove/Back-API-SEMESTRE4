@@ -93,6 +93,7 @@ OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=qwen3:1.7b
 NCM_CSV_PATH=C:/csv/ncm.csv
 TOP_K=5
+SECRET_KEY = 
 ```
 
 ⚠️ Observações:
@@ -100,6 +101,10 @@ TOP_K=5
 - **Banco de dados:** crie o banco **antes** de rodar o backend. Por padrão, usamos `api4ads`, mas você pode escolher outro nome.
 - **CSV de NCM:** deve conter colunas `ncm` e `descricao`, codificação **latin1**, separador `,`.
 - **Migrations ainda não implementadas:** como ainda não implementamos as migrations, caso exista qualquer modificação no banco (adição de coluna, mudança de tipo, etc.), devemos excluir o banco de dados atual (ou todas as tabelas - caso exclua o banco, lembre-se de recriá-lo), e rodar novamente o projeto para criação automática das novas tabelas. 
+- **Criar Secret Key:** para criar sua seccret key e adicina-la no .env, acesse o terminal e cole esse codigo, a chave gerada devera ser copiada e colada no "SECRET_KEY=".
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
 
 ---
 
