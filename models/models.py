@@ -13,6 +13,11 @@ class Usuario(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # --- LINHA ADICIONADA ---
+    # Coluna para guardar o código temporário (ex: "123456")
+    reset_token = Column(String(10), nullable=True, default=None)
+    # ------------------------
+
     transacoes = relationship(
         "Transacao",
         back_populates="usuario",

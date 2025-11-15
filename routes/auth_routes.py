@@ -1,14 +1,44 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, EmailStr
 from datetime import timedelta
+import random
+import string
+
+# Seus imports
 from database import database, crud
 from services import auth_service
-from services.password_utils import verify_password
 from schemas import user_schemas
 from models import models
 
+# Imports necessários (confirme que você tem o get_password_hash)
+from services.password_utils import verify_password, get_password_hash 
+# Import da nova função de email
+from email_utils import send_recovery_email
+
 router = APIRouter()
+
+# --- SCHEMAS (Modelos de dados Pydantic para as novas rotas) ---
+class EmailSchema(BaseModel):
+    email: EmailStr
+
+class VerifyTokenSchema(BaseModel):
+    email: EmailStr
+    token: str
+
+class ResetPasswordSchema(BaseModel):
+    email: EmailStr
+    token: str
+    new_password: str
+
+# --- FUNÇÃO AUXILIAR ---
+def gerar_codigo(length=6):
+    """Gera um código numérico de 6 dígitos"""
+    return ''.join(random.choices(string.digits, k=length))
+
+
+# --- SUAS ROTAS ORIGINAIS (INTACTAS) ---
 
 @router.post("/auth/login", response_model=user_schemas.TokenResponse)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
@@ -32,3 +62,62 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 @router.get("/user/profile", response_model=user_schemas.UserProfile)
 async def read_users_me(current_user: models.Usuario = Depends(auth_service.get_current_user)):
     return {"name": current_user.nome, "email": current_user.email}
+
+
+# --- NOVAS ROTAS DE RECUPERAÇÃO ADICIONADAS ---
+
+@router.post("/auth/password-recovery")
+async def password_recovery(data: EmailSchema, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
+    # 1. Busca usuário real no banco
+    user = crud.get_user_by_email(db, email=data.email)
+    
+    if not user:
+        # Não vazar informação se o email existe, mas para debug é melhor saber
+        raise HTTPException(status_code=404, detail="E-mail não cadastrado.")
+
+    # 2. Gera token e salva no banco
+    token = gerar_codigo()
+    user.reset_token = token
+    db.commit() # Salva a alteração
+    db.refresh(user)
+
+    # 3. Envia email em background
+    background_tasks.add_task(send_recovery_email, user.email, token)
+
+    return {"message": "Código de verificação enviado para o seu e-mail."}
+
+
+@router.post("/auth/verify-token")
+async def verify_token_route(data: VerifyTokenSchema, db: Session = Depends(database.get_db)):
+    user = crud.get_user_by_email(db, email=data.email)
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    # 4. Verifica se o token do banco bate com o token enviado
+    if not user.reset_token or user.reset_token != data.token:
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado.")
+    
+    return {"message": "Código válido."}
+
+
+@router.post("/auth/reset-password")
+async def reset_password_route(data: ResetPasswordSchema, db: Session = Depends(database.get_db)):
+    user = crud.get_user_by_email(db, email=data.email)
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    # 5. Verificação dupla de segurança
+    if not user.reset_token or user.reset_token != data.token:
+        raise HTTPException(status_code=400, detail="Token inválido. Reinicie o processo.")
+    
+    # 6. Criptografa a nova senha
+    hashed_password = get_password_hash(data.new_password)
+    
+    # 7. Atualiza no banco e limpa o token
+    user.senha = hashed_password
+    user.reset_token = None # Limpa o token para não ser usado de novo
+    db.commit()
+    
+    return {"message": "Senha alterada com sucesso."}
