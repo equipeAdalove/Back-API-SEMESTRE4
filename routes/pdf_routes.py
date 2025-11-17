@@ -22,8 +22,6 @@ from models import models
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# --- Schemas Pydantic  ---
-
 class ExtractedItem(BaseModel):
     partnumber: str
     descricao_raw: str
@@ -46,8 +44,6 @@ class FinalItem(BaseModel):
 class ExcelRequest(BaseModel):
     items: List[FinalItem]
 
-# --- NOVOS SCHEMAS DA ETAPA 3 ---
-
 class TransacaoInfo(BaseModel):
     id: int
     nome: Optional[str] = None 
@@ -60,10 +56,10 @@ class RenameRequest(BaseModel):
 
 class TransacaoDetailResponse(BaseModel):
     transacao_id: int
-    items: List[FinalItem]
+    processed_items: List[FinalItem]
+    pending_items: List[ExtractedItem]
 
 
-# --- Endpoint /extract_from_pdf  ---
 @router.post("/extract_from_pdf", response_model=ExtractionResponse, status_code=status.HTTP_200_OK)
 async def extract_from_pdf(
     file: UploadFile = File(...), 
@@ -99,10 +95,25 @@ async def extract_from_pdf(
 
     itens_formatados = format_many(itens_raw)
     
+    try:
+        for item in itens_formatados:
+            item_data = {
+                "partnumber": item["partnumber"],
+                "descricao_raw": item["descricao_raw"]
+            }
+            saved_item = crud.upsert_item(db, item_data=item_data, fabricante_id=None)
+            if saved_item:
+                crud.link_item_to_transacao(
+                    db=db, 
+                    transacao_id=db_transacao.id, 
+                    item_partnumber=saved_item.partnumber
+                )
+    except Exception as e:
+        logger.error(f"Erro ao salvar itens parciais: {e}")
+    
     return ExtractionResponse(transacao_id=db_transacao.id, items=itens_formatados)
 
 
-# --- Endpoint /process_items (ETAPA 2) ---
 @router.post("/process_items/{transacao_id}", response_model=List[FinalItem], status_code=status.HTTP_200_OK)
 async def process_items(
     transacao_id: int, 
@@ -141,10 +152,14 @@ async def process_items(
                 "descricao": db_item.descricao,
                 "is_new_manufacturer": False 
             })
-            crud.link_item_to_transacao(db=db, transacao_id=transacao_id, item_partnumber=db_item.partnumber)
+            existing_link = db.query(models.TransacaoItem).filter(
+                models.TransacaoItem.transacao_id == transacao_id,
+                models.TransacaoItem.item_partnumber == db_item.partnumber
+            ).first()
+            if not existing_link:
+                crud.link_item_to_transacao(db=db, transacao_id=transacao_id, item_partnumber=db_item.partnumber)
             continue 
         
-        # --- Se db_item NÃO existe (Cache MISS), processa normalmente ---
         logger.info(f"Cache MISS para PN {pn}. Processando...")
         try:
             scraper_info = find_manufacturer_and_location(pn)
@@ -196,7 +211,12 @@ async def process_items(
             db_item_salvo = crud.upsert_item(db, item_data=item_dict, fabricante_id=db_fabricante.id)
             
             if db_item_salvo: 
-                crud.link_item_to_transacao(db, transacao_id=transacao_id, item_partnumber=db_item_salvo.partnumber)
+                existing_link = db.query(models.TransacaoItem).filter(
+                    models.TransacaoItem.transacao_id == transacao_id,
+                    models.TransacaoItem.item_partnumber == db_item_salvo.partnumber
+                ).first()
+                if not existing_link:
+                    crud.link_item_to_transacao(db, transacao_id=transacao_id, item_partnumber=db_item_salvo.partnumber)
 
             processed_rows.append({
                 "partnumber": pn, 
@@ -217,24 +237,19 @@ async def process_items(
 
     return JSONResponse(content=processed_rows)
 
-# --- Endpoint /generate_excel (ETAPA 2) ---
 @router.post("/generate_excel", status_code=status.HTTP_200_OK)
 async def generate_excel(data: ExcelRequest, current_user: models.Usuario = Depends(get_current_user)):
     items_data = [item.model_dump() for item in data.items]
-
     if not items_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhum item fornecido para gerar o Excel.")
-
     try:
         df_out = pd.DataFrame(items_data)
         if 'is_new_manufacturer' in df_out.columns:
             df_out = df_out.drop(columns=['is_new_manufacturer'])
-
         stream = io.BytesIO()
         with pd.ExcelWriter(stream, engine="openpyxl") as writer:
             df_out.to_excel(writer, index=False, sheet_name="resultado")
         stream.seek(0)
-
         filename = "pedido_classificado.xlsx"
         return StreamingResponse(
             stream,
@@ -245,7 +260,6 @@ async def generate_excel(data: ExcelRequest, current_user: models.Usuario = Depe
         logger.exception("Erro gerando arquivo Excel")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao gerar o arquivo Excel.")
     
-# --- Endpoint /update_transaction (ETAPA 2) ---
 @router.put("/update_transaction/{transacao_id}", status_code=status.HTTP_200_OK)
 async def update_transaction_items(
     transacao_id: int, 
@@ -255,70 +269,74 @@ async def update_transaction_items(
 ):
     if not data.items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhuma item fornecido.")
-
     db_transacao = db.query(models.Transacao).filter(
         models.Transacao.id == transacao_id, 
         models.Transacao.usuario_id == current_user.id
     ).first()
     if not db_transacao:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transação não encontrada ou não pertence ao usuário.")
-
     try:
         updated_items_count = 0
-        
         for item_data in data.items:
             item_dict = item_data.model_dump() 
-
             db_fabricante = crud.get_or_create_fabricante(
                 db=db,
                 nome=item_dict.get('fabricante', 'Não identificado'),
                 localizacao=item_dict.get('localizacao', 'Não encontrada')
             )
-            
             db_item = crud.upsert_item(
                 db=db,
                 item_data=item_dict,
                 fabricante_id=db_fabricante.id
             )
-            
             if db_item:
                 updated_items_count += 1
-                
                 link = db.query(models.TransacaoItem).filter(
                     models.TransacaoItem.transacao_id == transacao_id,
                     models.TransacaoItem.item_partnumber == db_item.partnumber
                 ).first()
-                
                 if not link:
-                     crud.link_item_to_transacao(
+                    crud.link_item_to_transacao(
                         db=db,
                         transacao_id=transacao_id,
                         item_partnumber=db_item.partnumber
                     )
-            
         return {"message": f"{updated_items_count} itens atualizados com sucesso na transação {transacao_id}."}
-
     except Exception as e:
         logger.exception("Erro ao atualizar itens no banco de dados")
         db.rollback() 
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro interno ao salvar: {e}")
 
 
-# --- NOVOS ENDPOINTS DA ETAPA 3 (HISTÓRICO) ---
-
 @router.get("/transacoes", response_model=List[TransacaoInfo], status_code=status.HTTP_200_OK)
 async def get_user_transactions(
     db: Session = Depends(database.get_db),
     current_user: models.Usuario = Depends(auth_service.get_current_user)
 ):
-    """
-    Retorna uma lista de todas as transações (processos) iniciados pelo usuário.
-    """
-    transacoes = db.query(models.Transacao).filter(
+    
+    transacoes = db.query(models.Transacao).options(
+        joinedload(models.Transacao.itens).joinedload(models.TransacaoItem.item)
+    ).filter(
         models.Transacao.usuario_id == current_user.id
     ).order_by(models.Transacao.created_at.desc()).all()
     
-    return transacoes # Pydantic lidará com a conversão (id, nome, created_at)
+    response_list: List[TransacaoInfo] = []
+    for t in transacoes:
+        is_concluido = False
+        if t.itens:
+            if any(ti.item and ti.item.ncm for ti in t.itens):
+                is_concluido = True
+        
+        if is_concluido:
+            response_list.append(
+                TransacaoInfo(
+                    id=t.id,
+                    nome=t.nome,
+                    created_at=t.created_at
+                )
+            )
+            
+    return response_list
 
 @router.get("/transacao/{transacao_id}", response_model=TransacaoDetailResponse, status_code=status.HTTP_200_OK)
 async def get_transaction_details(
@@ -326,10 +344,6 @@ async def get_transaction_details(
     db: Session = Depends(database.get_db),
     current_user: models.Usuario = Depends(auth_service.get_current_user)
 ):
-    """
-    Retorna os detalhes completos (itens processados) de uma transação específica.
-    """
-    # Query otimizada para buscar transação, links, itens e fabricantes de uma só vez
     db_transacao = db.query(models.Transacao).options(
         joinedload(models.Transacao.itens).joinedload(models.TransacaoItem.item).joinedload(models.Item.fabricante)
     ).filter(
@@ -341,26 +355,37 @@ async def get_transaction_details(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transação não encontrada ou não pertence ao usuário.")
 
     processed_items_list: List[FinalItem] = []
+    pending_items_list: List[ExtractedItem] = []
     
-    # Monta a lista de 'FinalItem' a partir dos dados do banco
     for transacao_item in db_transacao.itens:
         item = transacao_item.item
-        if not item or not item.fabricante:
-            # Isso pode acontecer se um item foi vinculado mas não processado (improvável no fluxo)
+        if not item:
             continue
             
-        processed_items_list.append(
-            FinalItem(
-                partnumber=item.partnumber,
-                fabricante=item.fabricante.razao_soc,
-                localizacao=item.fabricante.endereco or "Não encontrada",
-                ncm=item.ncm or "N/A",
-                descricao=item.descricao or item.descricao_curta or "",
-                is_new_manufacturer=False # Não é relevante ao carregar do histórico
+        if item.fabricante and item.ncm:
+            processed_items_list.append(
+                FinalItem(
+                    partnumber=item.partnumber,
+                    fabricante=item.fabricante.razao_soc,
+                    localizacao=item.fabricante.endereco or "Não encontrada",
+                    ncm=item.ncm,
+                    descricao=item.descricao or "",
+                    is_new_manufacturer=False 
+                )
             )
-        )
+        else:
+            pending_items_list.append(
+                ExtractedItem(
+                    partnumber=item.partnumber,
+                    descricao_raw=item.descricao_curta or item.descricao or ""
+                )
+            )
 
-    return TransacaoDetailResponse(transacao_id=db_transacao.id, items=processed_items_list)
+    return TransacaoDetailResponse(
+        transacao_id=db_transacao.id, 
+        processed_items=processed_items_list,
+        pending_items=pending_items_list
+    )
 
 @router.put("/transacao/{transacao_id}/rename", status_code=status.HTTP_200_OK)
 async def rename_transaction(
@@ -369,9 +394,6 @@ async def rename_transaction(
     db: Session = Depends(database.get_db),
     current_user: models.Usuario = Depends(auth_service.get_current_user)
 ):
-    """
-    Permite ao usuário renomear uma transação (processo).
-    """
     if not data.nome or not data.nome.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="O nome não pode estar vazio.")
 
