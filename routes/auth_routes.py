@@ -1,123 +1,98 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+# routes/auth_routes.py
+from fastapi import (
+    APIRouter,
+    Depends,
+    status,
+    BackgroundTasks,
+)
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
-from datetime import timedelta
-import random
-import string
 
-# Seus imports
-from database import database, crud
-from services import auth_service
+from database import database
 from schemas import user_schemas
+from schemas.auth_schemas import (
+    EmailSchema,
+    VerifyTokenSchema,
+    ResetPasswordSchema,
+)
+from services.AuthServices import auth_workflow_service
 from models import models
-
-# Imports necessários (confirme que você tem o get_password_hash)
-from services.password_utils import verify_password, get_password_hash 
-# Import da nova função de email
 from email_utils import send_recovery_email
+from services.AuthServices import auth_service
 
 router = APIRouter()
 
-# --- SCHEMAS (Modelos de dados Pydantic para as novas rotas) ---
-class EmailSchema(BaseModel):
-    email: EmailStr
 
-class VerifyTokenSchema(BaseModel):
-    email: EmailStr
-    token: str
-
-class ResetPasswordSchema(BaseModel):
-    email: EmailStr
-    token: str
-    new_password: str
-
-# --- FUNÇÃO AUXILIAR ---
-def gerar_codigo(length=6):
-    """Gera um código numérico de 6 dígitos"""
-    return ''.join(random.choices(string.digits, k=length))
-
-
-# --- SUAS ROTAS ORIGINAIS (INTACTAS) ---
-
-@router.post("/auth/login", response_model=user_schemas.TokenResponse)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
-    user = crud.get_user_by_email(db, email=form_data.username)
-
-    if not user or not verify_password(form_data.password, user.senha):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="E-mail e/ou senha incorretos",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    access_token_expires = timedelta(minutes=auth_service.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = auth_service.create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+@router.post(
+    "/auth/login",
+    response_model=user_schemas.TokenResponse,
+)
+def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(database.get_db),
+):
+    return auth_workflow_service.login(
+        db=db,
+        username=form_data.username,
+        password=form_data.password,
     )
 
-    return {"data": {"access_token": access_token, "token_type": "bearer"}}
 
-
-@router.get("/user/profile", response_model=user_schemas.UserProfile)
-async def read_users_me(current_user: models.Usuario = Depends(auth_service.get_current_user)):
+@router.get(
+    "/user/profile",
+    response_model=user_schemas.UserProfile,
+)
+async def read_users_me(
+    current_user: models.Usuario = Depends(auth_service.get_current_user),
+):
     return {"name": current_user.nome, "email": current_user.email}
 
 
-# --- NOVAS ROTAS DE RECUPERAÇÃO ADICIONADAS ---
-
 @router.post("/auth/password-recovery")
-async def password_recovery(data: EmailSchema, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
-    # 1. Busca usuário real no banco
-    user = crud.get_user_by_email(db, email=data.email)
-    
-    if not user:
-        # Não vazar informação se o email existe, mas para debug é melhor saber
-        raise HTTPException(status_code=404, detail="E-mail não cadastrado.")
+async def password_recovery(
+    data: EmailSchema,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(database.get_db),
+):
+    user = auth_workflow_service.init_password_recovery(
+        db=db,
+        email=data.email,
+    )
 
-    # 2. Gera token e salva no banco
-    token = gerar_codigo()
-    user.reset_token = token
-    db.commit() # Salva a alteração
-    db.refresh(user)
+    email_to = getattr(user, "email")
+    code = getattr(user, "reset_token")
 
-    # 3. Envia email em background
-    background_tasks.add_task(send_recovery_email, user.email, token)
+    background_tasks.add_task(
+        send_recovery_email,
+        email_to,
+        code,
+    )
 
-    return {"message": "Código de verificação enviado para o seu e-mail."}
+    return {
+        "message": "Código de verificação enviado para o seu e-mail.",
+    }
 
 
 @router.post("/auth/verify-token")
-async def verify_token_route(data: VerifyTokenSchema, db: Session = Depends(database.get_db)):
-    user = crud.get_user_by_email(db, email=data.email)
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
-    
-    # 4. Verifica se o token do banco bate com o token enviado
-    if not user.reset_token or user.reset_token != data.token:
-        raise HTTPException(status_code=400, detail="Código inválido ou expirado.")
-    
-    return {"message": "Código válido."}
+async def verify_token_route(
+    data: VerifyTokenSchema,
+    db: Session = Depends(database.get_db),
+):
+    return auth_workflow_service.verify_reset_token(
+        db=db,
+        email=data.email,
+        token=data.token,
+    )
 
 
 @router.post("/auth/reset-password")
-async def reset_password_route(data: ResetPasswordSchema, db: Session = Depends(database.get_db)):
-    user = crud.get_user_by_email(db, email=data.email)
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
-    
-    # 5. Verificação dupla de segurança
-    if not user.reset_token or user.reset_token != data.token:
-        raise HTTPException(status_code=400, detail="Token inválido. Reinicie o processo.")
-    
-    # 6. Criptografa a nova senha
-    hashed_password = get_password_hash(data.new_password)
-    
-    # 7. Atualiza no banco e limpa o token
-    user.senha = hashed_password
-    user.reset_token = None # Limpa o token para não ser usado de novo
-    db.commit()
-    
-    return {"message": "Senha alterada com sucesso."}
+async def reset_password_route(
+    data: ResetPasswordSchema,
+    db: Session = Depends(database.get_db),
+):
+    return auth_workflow_service.reset_password(
+        db=db,
+        email=data.email,
+        token=data.token,
+        new_password=data.new_password,
+    )

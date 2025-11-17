@@ -1,4 +1,4 @@
-# C:\Users\ferna\Desktop\API\Back-API-SEMESTRE4\config.py
+
 
 # Caminho para o seu arquivo CSV
 # Substitua pelo caminho real do arquivo NCM se ele existir

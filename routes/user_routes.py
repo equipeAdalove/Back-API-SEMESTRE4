@@ -1,34 +1,54 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks # 1. Adicionado BackgroundTasks aqui
+# routes/user_routes.py
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+    BackgroundTasks,
+)
 from sqlalchemy.orm import Session
-from database import database, crud
+
+from database import database
 from schemas import user_schemas
-from email_utils import send_welcome_email # 2. Importe a função de email que criamos antes
+from services.UserServices import user_service
+from email_utils import send_welcome_email
+from models import models
 
 router = APIRouter()
 
-@router.post("/users", response_model=user_schemas.User, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/users",
+    response_model=user_schemas.User,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_user(
-    user: user_schemas.UserCreate, 
-    background_tasks: BackgroundTasks, # 3. Adicionado este parâmetro para gerenciar tarefas em segundo plano
-    db: Session = Depends(database.get_db)
+    user: user_schemas.UserCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(database.get_db),
 ):
-    db_user = crud.get_user_by_email(db, email=user.email)
+    # Verifica se já existe usuário com esse e-mail
+    db_user = user_service.get_user_by_email(db, email=user.email)
     if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    user_data_dict = {"name": user.name, "email": user.email, "password": user.password}
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
 
-    print("--- DADOS RECEBIDOS NA ROTA DE CADASTRO ---")
-    print(f"Nome recebido: {user.name}")
-    print(f"Email recebido: {user.email}")
-    # print(f"SENHA recebida: {user.password}") # Dica de segurança: Evite printar a senha real nos logs
-    print("-----------------------------------------")
-    
-    # 4. Guardamos o usuário criado em uma variável primeiro
-    new_user = crud.create_user(db=db, user_data=user_data_dict)
+    # Delega criação para o service
+    new_user: models.Usuario = user_service.create_user(
+        db=db,
+        user_data=user,
+    )
 
-    # 5. Agendamos o envio do email (Isso acontece 'por fora', sem travar o retorno)
-    background_tasks.add_task(send_welcome_email, new_user.email, new_user.nome)
+    # Dispara e-mail de boas-vindas em background
+    email_to = getattr(new_user, "email")
+    nome_to = getattr(new_user, "nome")
 
-    # 6. Retornamos o usuário criado
+    background_tasks.add_task(
+        send_welcome_email,
+        email_to,
+        nome_to,
+    )
+
     return new_user
