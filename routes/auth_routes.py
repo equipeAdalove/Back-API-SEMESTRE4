@@ -6,20 +6,20 @@ from datetime import timedelta
 import random
 import string
 
-# Seus imports
+# Imports do projeto
 from database import database, crud
 from services import auth_service
 from schemas import user_schemas
 from models import models
 
-# Imports necessários (confirme que você tem o get_password_hash)
+# Utilitários de senha e email
 from services.password_utils import verify_password, get_password_hash 
-# Import da nova função de email
 from email_utils import send_recovery_email
 
 router = APIRouter()
 
-# --- SCHEMAS (Modelos de dados Pydantic para as novas rotas) ---
+# --- SCHEMAS (Modelos de dados) ---
+
 class EmailSchema(BaseModel):
     email: EmailStr
 
@@ -32,13 +32,19 @@ class ResetPasswordSchema(BaseModel):
     token: str
     new_password: str
 
-# --- FUNÇÃO AUXILIAR ---
+class UserChangePassword(BaseModel):
+    current_password: str
+    new_password: str
+
+
+# --- FUNÇÕES AUXILIARES ---
+
 def gerar_codigo(length=6):
     """Gera um código numérico de 6 dígitos"""
     return ''.join(random.choices(string.digits, k=length))
 
 
-# --- SUAS ROTAS ORIGINAIS (INTACTAS) ---
+# --- ROTAS DE AUTENTICAÇÃO E PERFIL ---
 
 @router.post("/auth/login", response_model=user_schemas.TokenResponse)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
@@ -64,7 +70,39 @@ async def read_users_me(current_user: models.Usuario = Depends(auth_service.get_
     return {"name": current_user.nome, "email": current_user.email}
 
 
-# --- NOVAS ROTAS DE RECUPERAÇÃO ADICIONADAS ---
+# --- NOVA ROTA: ATUALIZAR SENHA (LOGADO) ---
+
+@router.put("/user/update-password")
+async def update_user_password(
+    data: UserChangePassword, 
+    current_user: models.Usuario = Depends(auth_service.get_current_user), 
+    db: Session = Depends(database.get_db)
+):
+    # 1. Verifica se a senha ATUAL enviada bate com a do banco
+    if not verify_password(data.current_password, current_user.senha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="A senha atual está incorreta."
+        )
+    
+    # 2. Verifica se a nova senha é igual à antiga (opcional, mas recomendado)
+    if verify_password(data.new_password, current_user.senha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="A nova senha não pode ser igual à atual."
+        )
+
+    # 3. Criptografa a NOVA senha
+    hashed_new_password = get_password_hash(data.new_password)
+    
+    # 4. Salva no banco
+    current_user.senha = hashed_new_password
+    db.commit()
+    
+    return {"message": "Senha atualizada com sucesso!"}
+
+
+# --- ROTAS DE RECUPERAÇÃO DE SENHA (ESQUECI A SENHA) ---
 
 @router.post("/auth/password-recovery")
 async def password_recovery(data: EmailSchema, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db)):
@@ -72,13 +110,13 @@ async def password_recovery(data: EmailSchema, background_tasks: BackgroundTasks
     user = crud.get_user_by_email(db, email=data.email)
     
     if not user:
-        # Não vazar informação se o email existe, mas para debug é melhor saber
+        # Retorna 404 ou 200 genérico para segurança (aqui mantive 404 conforme seu código original)
         raise HTTPException(status_code=404, detail="E-mail não cadastrado.")
 
     # 2. Gera token e salva no banco
     token = gerar_codigo()
     user.reset_token = token
-    db.commit() # Salva a alteração
+    db.commit()
     db.refresh(user)
 
     # 3. Envia email em background
@@ -117,7 +155,7 @@ async def reset_password_route(data: ResetPasswordSchema, db: Session = Depends(
     
     # 7. Atualiza no banco e limpa o token
     user.senha = hashed_password
-    user.reset_token = None # Limpa o token para não ser usado de novo
+    user.reset_token = None 
     db.commit()
     
     return {"message": "Senha alterada com sucesso."}
